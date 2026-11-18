@@ -3,11 +3,10 @@
 main() {
     set -euo pipefail
 
-    # Сохраняем в текущий каталог, откуда запущен скрипт
     local OUT="./netplan-sample.yaml"
-    local APPLY_URL="https://raw.githubusercontent.com/adm1n5ky/netplan-networkd/main/apply.sh"
+    local APPLY_URL="https://githubusercontent.com"
 
-    # Проверка прав root (нужны для диагностики и дальнейшего перехода)
+    # Проверка прав root
     if [[ "$(id -u)" -ne 0 ]]; then
         echo "Ошибка: запустите скрипт от имени root или через sudo." >&2
         exit 1
@@ -20,7 +19,6 @@ main() {
         echo "Ошибка: файл /etc/os-release не найден" >&2
         exit 1
     fi
-    # shellcheck source=/dev/null
     source /etc/os-release
 
     if [[ "${ID:-}" != "ubuntu" || "${VERSION_ID:-}" != "26.04" ]] || \
@@ -70,27 +68,11 @@ main() {
     GW4=$(ip -4 route show default 2>/dev/null | awk '/via/ {print $3; exit}' || true)
     GW6=$(ip -6 route show default 2>/dev/null | awk '/via/ {print $3; exit}' || true)
 
+    # Сбор DNS в одну строку без переносов, чтобы исключить синтаксические ошибки
     DNS=""
     DNS_FALLBACK=0
     if command -v resolvectl >/dev/null 2>&1; then
-        DNS=$(
-            {
-                resolvectl dns "$IFACE" 2>/dev/null || true
-                resolvectl dns 2>/dev/null | awk '
-                    /^[^[:space:]]/ { if (line != "") print line; line = $0; next }
-                    /^[[:space:]]/  { line = line " " $0; next }
-                    END { if (line != "") print line }
-                ' | grep '^Global:' || true
-            } \
-            | sed -E 's/^Link [0-9]+ \([^)]+\):[[:space:]]*//; s/^Global:[[:space:]]*//' \
-            | tr ' ' '\n' \
-            | sed 's/#.*//' \
-
-            | grep -vE '^$|^127\.0\.0\.53$|^::1$' \
-            | awk '!seen[$0]++' \
-            | paste -sd, - \
-            || true
-        )
+        DNS=$( { resolvectl dns "$IFACE" 2>/dev/null || true; resolvectl dns 2>/dev/null | awk '/^[^[:space:]]/ { if (line != "") print line; line = $0; next } /^[[:space:]]/ { line = line " " $0; next } END { if (line != "") print line }' | grep '^Global:' || true; } | sed -E 's/^Link [0-9]+ \([^)]+\):[[:space:]]*//; s/^Global:[[:space:]]*//' | tr ' ' '\n' | sed 's/#.*//' | grep -vE '^$|^127\.0\.0\.53$|^::1$' | awk '!seen[$0]++' | paste -sd, - || true )
     fi
 
     if [[ -z "${DNS:-}" ]]; then
@@ -164,7 +146,6 @@ main() {
     echo "─────────────────────────────────────────────────────────────"
     echo
 
-    # Интерактивное меню с чтением напрямую из /dev/tty (для работы через curl | bash)
     if [[ ! -r /dev/tty ]]; then
         echo "Терминал недоступен для интерактивного выбора. Выход без изменений."
         exit 0
