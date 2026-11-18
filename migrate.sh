@@ -4,7 +4,7 @@ main() {
     set -euo pipefail
 
     local OUT="./netplan-sample.yaml"
-    local APPLY_URL="https://githubusercontent.com"
+    local APPLY_URL="https://raw.githubusercontent.com/adm1n5ky/netplan-networkd/main/apply.shm"
 
     # Проверка прав root
     if [[ "$(id -u)" -ne 0 ]]; then
