@@ -38,7 +38,7 @@
 Выполните на сервере от имени `root` (или через `sudo`):
 
 ```bash
-curl -fsSL https://githubusercontent.com | sudo bash
+curl -fsSL https://raw.githubusercontent.com/adm1n5ky/netplan-networkd/main/migrate.sh | sudo bash
 ```
 
 После вывода диагностики и сгенерированного файла `./netplan-sample.yaml` скрипт предложит выбрать действие:
@@ -50,7 +50,7 @@ curl -fsSL https://githubusercontent.com | sudo bash
 Если вы выбрали `1`, проверили `./netplan-sample.yaml` (или отредактировали его под свои нужды) и готовы применить настройки:
 
 ```bash
-curl -fsSL https://githubusercontent.com | sudo bash
+curl -fsSL https://raw.githubusercontent.com/adm1n5ky/netplan-networkd/main/apply.sh | sudo bash
 ```
 
 ## Откат изменений
