@@ -5,7 +5,6 @@ main() {
 
     local SAMPLE="./netplan-sample.yaml"
     local TARGET_DIR="/etc/netplan"
-    # Используем 01- как базовый слой для основной сети (поверх него лягут туннели HE и др.)
     local TARGET_FILE="${TARGET_DIR}/01-netcfg.yaml"
     local BACKUP_DIR="/root/netplan-backup-$(date +%Y%m%d-%H%M%S)"
 
@@ -26,6 +25,9 @@ main() {
     fi
 
     echo ">>> Начинаем безопасный переход на systemd-networkd..."
+
+    # Очищаем старые .bak от предыдущих неудачных попыток, если остались
+    rm -f "${TARGET_DIR}"/*.yaml.bak
 
     # 1. Создаем резервную копию всего каталога /etc/netplan
     mkdir -p "$BACKUP_DIR"
@@ -63,39 +65,45 @@ main() {
     systemctl enable systemd-networkd.service systemd-networkd.socket >/dev/null 2>&1 || true
     systemctl start systemd-networkd.service
 
-    # 5. Тестовое применение с автооткатом через 120 секунд
-    echo
-    echo "=============================================================="
-    echo "ВНИМАНИЕ: Запускается тестовое применение сети (таймер 120 сек)."
-    echo "Если связь не оборвалась — нажмите ENTER для подтверждения."
-    echo "Если доступ пропадет — сеть вернется сама через 2 минуты."
-    echo "=============================================================="
-    echo
+    # 5. Запускаем фоновый таймер отката на 120 секунд (страховка на случай потери SSH)
+    (
+        sleep 120
+        rm -f "$TARGET_FILE"
+        for f in "${TARGET_DIR}"/*.yaml.bak; do
+            [[ -e "$f" ]] && mv "$f" "${f%.bak}"
+        done
+        systemctl unmask NetworkManager >/dev/null 2>&1 || true
+        systemctl start NetworkManager >/dev/null 2>&1 || true
+        netplan apply >/dev/null 2>&1 || true
+    ) >/dev/null 2>&1 &
+    local ROLLBACK_PID=$!
 
-    if [[ -r /dev/tty ]]; then
-        if ! netplan try --timeout 120 </dev/tty; then
-            echo "ОШИБКА или откат по таймеру! Восстанавливаем старые конфиги..." >&2
-            rm -f "$TARGET_FILE"
-            for f in "${TARGET_DIR}"/*.yaml.bak; do
-                [[ -e "$f" ]] && mv "$f" "${f%.bak}"
-            done
-            netplan apply || true
-            exit 1
-        fi
-    else
-        echo "Терминал недоступен, применяем напрямую через netplan apply..."
-        netplan apply
-    fi
+    # Гарантируем, что при штатном выходе или ошибке мы не оставим висящих процессов
+    cleanup_rollback() {
+        kill "$ROLLBACK_PID" 2>/dev/null || true
+    }
 
-    # 6. Проверяем пинг до шлюза перед отключением NetworkManager
+    # 6. Применяем новую конфигурацию напрямую
+    echo ">>> Применяем конфигурацию через netplan apply (страховка отката запущена на 120 сек)..."
+    netplan apply
+    sleep 2
+
+    # 7. Проверяем доступность шлюза
     local GW4
     GW4=$(ip -4 route show default 2>/dev/null | awk '/via/ {print $3; exit}' || true)
     if [[ -n "$GW4" ]] && ! ping -c 2 -W 2 "$GW4" >/dev/null 2>&1; then
-        echo "ВНИМАНИЕ: шлюз $GW4 не пингуется! NetworkManager оставлен активным." >&2
+        echo "ОШИБКА: шлюз $GW4 не пингуется! Запускаем немедленный откат..." >&2
+        cleanup_rollback
+        rm -f "$TARGET_FILE"
+        for f in "${TARGET_DIR}"/*.yaml.bak; do
+            [[ -e "$f" ]] && mv "$f" "${f%.bak}"
+        done
+        netplan apply || true
         exit 1
     fi
+    echo "✔ Шлюз $GW4 отвечает, связь стабильна."
 
-    # 7. Безопасно останавливаем и отключаем NetworkManager
+    # 8. Безопасно останавливаем и отключаем NetworkManager
     if systemctl is-active --quiet NetworkManager 2>/dev/null || systemctl is-enabled --quiet NetworkManager 2>/dev/null; then
         echo ">>> Отключаем службу NetworkManager..."
         systemctl stop NetworkManager 2>/dev/null || true
@@ -104,7 +112,25 @@ main() {
         echo "✔ NetworkManager остановлен и отключен."
     fi
 
-    # 8. Итог
+    # Повторная проверка связи уже без NetworkManager
+    if [[ -n "$GW4" ]] && ! ping -c 2 -W 2 "$GW4" >/dev/null 2>&1; then
+        echo "ОШИБКА: связь пропала после остановки NetworkManager! Откатываемся..." >&2
+        cleanup_rollback
+        rm -f "$TARGET_FILE"
+        for f in "${TARGET_DIR}"/*.yaml.bak; do
+            [[ -e "$f" ]] && mv "$f" "${f%.bak}"
+        done
+        systemctl unmask NetworkManager 2>/dev/null || true
+        systemctl enable --now NetworkManager 2>/dev/null || true
+        netplan apply || true
+        exit 1
+    fi
+
+    # 9. Отменяем таймер отката и удаляем .bak файлы, так как миграция прошла успешно
+    cleanup_rollback
+    rm -f "${TARGET_DIR}"/*.yaml.bak
+
+    # 10. Итог
     echo
     echo "=============================================================="
     echo "✔ МИГРАЦИЯ УСПЕШНО ЗАВЕРШЕНА"
