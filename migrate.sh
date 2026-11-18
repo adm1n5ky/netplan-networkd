@@ -5,7 +5,7 @@ main() {
 
     # Сохраняем в текущий каталог, откуда запущен скрипт
     local OUT="./netplan-sample.yaml"
-    local APPLY_URL="https://githubusercontent.com"
+    local APPLY_URL="https://raw.githubusercontent.com/adm1n5ky/netplan-networkd/main/apply.sh"
 
     # Проверка прав root (нужны для диагностики и дальнейшего перехода)
     if [[ "$(id -u)" -ne 0 ]]; then
