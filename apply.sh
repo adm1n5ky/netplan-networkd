@@ -58,9 +58,10 @@ main() {
     fi
     echo "✔ Синтаксис Netplan валиден."
 
-    # 4. Включаем systemd-networkd до применения настроек
-    systemctl enable systemd-networkd >/dev/null 2>&1 || true
-    systemctl start systemd-networkd
+    # 4. Размаскируем и включаем systemd-networkd до применения настроек
+    systemctl unmask systemd-networkd.service systemd-networkd.socket systemd-networkd-wait-online.service >/dev/null 2>&1 || true
+    systemctl enable systemd-networkd.service systemd-networkd.socket >/dev/null 2>&1 || true
+    systemctl start systemd-networkd.service
 
     # 5. Тестовое применение с автооткатом через 120 секунд
     echo
