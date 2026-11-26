@@ -4,44 +4,38 @@ main() {
     set -euo pipefail
 
     local OUT="./netplan-sample.yaml"
-    local APPLY_URL="https://raw.githubusercontent.com/adm1n5ky/netplan-networkd/main/apply.sh"
 
-    # Проверка прав root
+    # --- Проверка root ---
     if [[ "$(id -u)" -ne 0 ]]; then
         echo "Ошибка: запустите скрипт от имени root или через sudo." >&2
         exit 1
     fi
 
-    # ==========================================================================
-    # ЭТАП 1: Проверка ОС и окружения (Ubuntu Server 26.04 без GUI)
-    # ==========================================================================
+    # --- Проверка ОС (Ubuntu 26.04, без десктопа) ---
     if [[ ! -r /etc/os-release ]]; then
         echo "Ошибка: файл /etc/os-release не найден" >&2
         exit 1
     fi
     source /etc/os-release
 
-    if [[ "${ID:-}" != "ubuntu" || "${VERSION_ID:-}" != "26.04" ]] || \
-       ! dpkg-query -W -f='${Status}' ubuntu-server 2>/dev/null | grep -q "ok installed"; then
-        echo "Ошибка: требуется Ubuntu Server 26.04 (текущая: ${PRETTY_NAME:-неизвестно})" >&2
+    if [[ "${ID:-}" != "ubuntu" || "${VERSION_ID:-}" != "26.04" ]]; then
+        echo "Ошибка: требуется Ubuntu 26.04 (текущая: ${PRETTY_NAME:-неизвестно})" >&2
         exit 1
     fi
 
     if dpkg -l ubuntu-desktop 2>/dev/null | grep -q '^ii' || systemctl is-active --quiet gdm 2>/dev/null; then
-        echo "Ошибка: обнаружена графическая оболочка рабочего стола, миграция отменена" >&2
+        echo "Ошибка: обнаружена графическая оболочка, миграция отменена" >&2
         exit 1
     fi
 
     if ! command -v netplan >/dev/null 2>&1; then
-        echo "Ошибка: утилита netplan не установлена в системе" >&2
+        echo "Ошибка: утилита netplan не установлена" >&2
         exit 1
     fi
 
-    echo "✔ Проверка пройдена: трушный Ubuntu Server 26.04 готов к анализу сети."
+    echo "✔ Проверка пройдена: Ubuntu Server 26.04 готов к анализу сети."
 
-    # ==========================================================================
-    # ЭТАП 2: Определение текущего менеджера сети
-    # ==========================================================================
+    # --- Текущий менеджер ---
     local CURRENT_MANAGER
     if systemctl is-active --quiet NetworkManager 2>/dev/null; then
         CURRENT_MANAGER="NetworkManager"
@@ -51,38 +45,41 @@ main() {
         CURRENT_MANAGER="Другой / Не определен"
     fi
 
-    # ==========================================================================
-    # ЭТАП 3: Сбор текущих сетевых параметров
-    # ==========================================================================
+    # --- Сбор сети ---
     local IFACE IPV4 IPV6 GW4 GW6 DNS DNS_FALLBACK
     IFACE=$(ip -o route show default 2>/dev/null | awk '{print $5; exit}')
     [[ -z "${IFACE:-}" ]] && IFACE=$(ip -6 -o route show default 2>/dev/null | awk '{print $5; exit}')
     if [[ -z "${IFACE:-}" ]]; then
-        echo "Ошибка: не найден сетевой интерфейс с маршрутом по умолчанию" >&2
+        echo "Ошибка: не найден интерфейс с маршрутом по умолчанию" >&2
         exit 1
     fi
 
     IPV4=$(ip -4 -o addr show dev "$IFACE" scope global 2>/dev/null | awk '{print $4; exit}' || true)
     IPV6=$(ip -6 -o addr show dev "$IFACE" scope global 2>/dev/null | awk '{print $4; exit}' || true)
-
     GW4=$(ip -4 route show default 2>/dev/null | awk '/via/ {print $3; exit}' || true)
     GW6=$(ip -6 route show default 2>/dev/null | awk '/via/ {print $3; exit}' || true)
 
-    # Сбор DNS в одну строку без переносов, чтобы исключить синтаксические ошибки
+    # --- DNS (только Global, без stub 127.0.0.53) ---
     DNS=""
     DNS_FALLBACK=0
     if command -v resolvectl >/dev/null 2>&1; then
-        DNS=$( { resolvectl dns "$IFACE" 2>/dev/null || true; resolvectl dns 2>/dev/null | awk '/^[^[:space:]]/ { if (line != "") print line; line = $0; next } /^[[:space:]]/ { line = line " " $0; next } END { if (line != "") print line }' | grep '^Global:' || true; } | sed -E 's/^Link [0-9]+ \([^)]+\):[[:space:]]*//; s/^Global:[[:space:]]*//' | tr ' ' '\n' | sed 's/#.*//' | grep -vE '^$|^127\.0\.0\.53$|^::1$' | awk '!seen[$0]++' | paste -sd, - || true )
+        DNS=$(resolvectl dns 2>/dev/null \
+            | awk '/^[^[:space:]]/ { if (line != "") print line; line = $0; next }
+                   /^[[:space:]]/  { line = line " " $0; next }
+                   END { if (line != "") print line }' \
+            | awk '/^Global:/ {sub(/^Global:[[:space:]]*/, ""); print; exit}' \
+            | tr ' ' '\n' \
+            | sed 's/#.*//' \
+            | grep -vE '^$|^127\.0\.0\.53$|^::1$' \
+            | paste -sd, - \
+            || true)
     fi
-
     if [[ -z "${DNS:-}" ]]; then
         DNS="1.1.1.1,8.8.8.8"
         DNS_FALLBACK=1
     fi
 
-    # ==========================================================================
-    # ЭТАП 4: Генерация YAML-конфига в текущий каталог
-    # ==========================================================================
+    # --- Генерация YAML ---
     {
         echo "network:"
         echo "  version: 2"
@@ -108,6 +105,7 @@ main() {
             if [[ -n "${GW6:-}" ]]; then
                 echo "        - to: \"::/0\""
                 echo "          via: ${GW6}"
+                # on-link для IPv6 нужен только если шлюз НЕ link-local
                 if [[ ! "${GW6}" =~ ^fe80: ]]; then
                     echo "          on-link: true"
                 fi
@@ -120,9 +118,7 @@ main() {
         fi
     } > "$OUT"
 
-    # ==========================================================================
-    # ЭТАП 5: Вывод сводки и интерактивный выбор
-    # ==========================================================================
+    # --- Сводка ---
     echo
     echo "┌─────────────────────────────────────────────────────────────"
     echo "│ Диагностика текущей сети"
@@ -145,32 +141,32 @@ main() {
     cat "$OUT"
     echo "─────────────────────────────────────────────────────────────"
     echo
-
-    if [[ ! -r /dev/tty ]]; then
-        echo "Терминал недоступен для интерактивного выбора. Выход без изменений."
-        exit 0
-    fi
-
-    while true; do
-        printf "Данные собраны, нажми 1 чтобы выйти без изменений настройки сети, или нажми 2 для запуска скрипта для установки netplan и перехода: "
-        read -r -n 1 CHOICE </dev/tty
-        echo
-
-        case "$CHOICE" in
-            1)
-                echo "Выход без изменений. Конфиг остался в $(pwd)/netplan-sample.yaml"
-                exit 0
-                ;;
-            2)
-                echo "Загружаем и запускаем скрипт применения настроек..."
-                curl -fsSL "$APPLY_URL" | bash
-                exit $?
-                ;;
-            *)
-                echo "Неверный ввод. Пожалуйста, нажмите 1 или 2."
-                ;;
-        esac
-    done
+    echo "Дальнейшие шаги (выполнять вручную, с открытой второй SSH-сессией):"
+    echo
+    echo "  1. Бэкап:"
+    echo "     sudo mkdir -p /root/netplan-backup && sudo cp -a /etc/netplan/*.yaml /root/netplan-backup/"
+    echo
+    echo "  2. Установить конфиг с правами 600:"
+    echo "     sudo install -m 600 ./netplan-sample.yaml /etc/netplan/01-netcfg.yaml"
+    echo
+    echo "  3. Проверить синтаксис:"
+    echo "     sudo netplan generate"
+    echo
+    echo "  4. Размаскировать networkd (но НЕ запускать вручную):"
+    echo "     sudo systemctl unmask systemd-networkd.service systemd-networkd.socket"
+    echo
+    echo "  5. Применить через try (netplan сам поднимет networkd):"
+    echo "     sudo netplan try --timeout 120"
+    echo
+    echo "  6. Проверить связь (НЕ пингуй шлюз — в облаке он может не отвечать на ICMP):"
+    echo "     ping -c 2 1.1.1.1"
+    echo "     ping -c 2 ya.ru"
+    echo
+    echo "  7. Только после успешной проверки — погасить NetworkManager:"
+    echo "     sudo systemctl stop NetworkManager && sudo systemctl disable NetworkManager && sudo systemctl mask NetworkManager"
+    echo
+    echo "  8. Перезагрузиться для чистой проверки:"
+    echo "     sudo reboot"
 }
 
 main "$@"
